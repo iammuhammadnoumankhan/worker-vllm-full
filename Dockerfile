@@ -8,9 +8,9 @@ ENV PATH="/root/.local/bin:$PATH"
 
 RUN ldconfig /usr/local/cuda-12.9/compat/
 
-# Install vLLM with FlashInfer - use CUDA 12.9 PyTorch wheels
+# Install vLLM with FlashInfer + audio extras (required for STT)
 RUN uv pip install --system "packaging>=24.2" && \
-    uv pip install --system "vllm[flashinfer]==0.16.0" --extra-index-url https://download.pytorch.org/whl/cu129
+    uv pip install --system "vllm[flashinfer,audio]==0.16.0" --extra-index-url https://download.pytorch.org/whl/cu129
 
 # Install additional Python dependencies (after vLLM to avoid PyTorch version conflicts)
 COPY builder/requirements.txt /requirements.txt
@@ -47,7 +47,7 @@ ENV MODEL_NAME=$MODEL_NAME \
 ENV PYTHONPATH="/:/vllm-workspace"
 
 RUN if [ "${VLLM_NIGHTLY}" = "true" ]; then \
-    uv pip install --system -U vllm --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly && \
+    uv pip install --system -U "vllm[audio]" --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly && \
     apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* && \
     uv pip install --system git+https://github.com/huggingface/transformers.git; \
 fi
