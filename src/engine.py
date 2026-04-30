@@ -543,10 +543,22 @@ class OpenAIvLLMEngine(vLLMEngine):
         if isinstance(payload, str):
             if payload.startswith("data:") and "," in payload:
                 payload = payload.split(",", 1)[1]
+            normalized = "".join(payload.split())
+            if not normalized:
+                raise ValueError("Audio file payload is empty")
             try:
-                return base64.b64decode(payload, validate=True)
+                return base64.b64decode(normalized, validate=True)
             except (binascii.Error, ValueError):
-                return payload.encode("utf-8")
+                pass
+            # Some clients send URL-safe base64 or omit padding.
+            padding = "=" * (-len(normalized) % 4)
+            try:
+                return base64.urlsafe_b64decode(normalized + padding)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError(
+                    "Invalid audio file payload. For RunPod JSON input, "
+                    "send file.data as base64-encoded audio bytes."
+                ) from e
         raise ValueError("Unsupported file payload type")
 
     def _build_upload_file_and_audio(self, file_payload: Any) -> tuple[UploadFile, bytes]:
