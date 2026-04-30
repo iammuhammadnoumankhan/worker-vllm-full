@@ -189,6 +189,18 @@ Supports the [Anthropic Messages API](https://docs.anthropic.com/en/api/messages
 }
 ```
 
+#### Audio Transcriptions
+
+**Path:** `/openai/v1/audio/transcriptions`
+
+Supports OpenAI-compatible speech-to-text requests (multipart form uploads) for vLLM STT models such as Whisper-compatible checkpoints.
+
+#### Audio Translations
+
+**Path:** `/openai/v1/audio/translations`
+
+Supports OpenAI-compatible speech translation for STT models that expose translation behavior.
+
 #### Response Format
 
 Both APIs return the same response format:

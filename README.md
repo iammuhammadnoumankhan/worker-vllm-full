@@ -154,7 +154,7 @@ You can deploy **any model on Hugging Face** that is supported by vLLM. For the 
 
 # Usage: OpenAI Compatibility
 
-The vLLM Worker is fully compatible with OpenAI's API, and you can use it with any OpenAI Codebase by changing only 3 lines in total. The supported routes are <ins>Chat Completions</ins>, <ins>Models</ins>, <ins>Responses</ins>, and <ins>Messages</ins> - with both streaming and non-streaming.
+The vLLM Worker is fully compatible with OpenAI's API, and you can use it with any OpenAI Codebase by changing only 3 lines in total. The supported routes are <ins>Chat Completions</ins>, <ins>Completions</ins>, <ins>Models</ins>, <ins>Responses</ins>, <ins>Messages</ins>, <ins>Audio Transcriptions</ins>, and <ins>Audio Translations</ins> - with both streaming and non-streaming where supported by vLLM.
 
 ## Modifying your OpenAI Codebase to use your deployed vLLM Worker
 
@@ -361,6 +361,30 @@ curl https://api.runpod.ai/v2/<YOUR ENDPOINT ID>/openai/v1/responses \
     "input": "Tell me a joke."
   }'
 ```
+
+### OpenAI Audio Transcriptions API
+
+**Path:** `/openai/v1/audio/transcriptions` (full URL: `https://api.runpod.ai/v2/<YOUR ENDPOINT ID>/openai/v1/audio/transcriptions`)
+
+Supports the same OpenAI-compatible transcription request as vLLM's official OpenAI server.
+
+```python
+with open("sample.wav", "rb") as f:
+    transcription = client.audio.transcriptions.create(
+        file=f,
+        model="<YOUR DEPLOYED MODEL REPO/NAME>",
+        language="en",
+        response_format="text",
+        temperature=0.0,
+    )
+print(transcription)
+```
+
+### OpenAI Audio Translations API
+
+**Path:** `/openai/v1/audio/translations` (full URL: `https://api.runpod.ai/v2/<YOUR ENDPOINT ID>/openai/v1/audio/translations`)
+
+Supports OpenAI-compatible speech translation via vLLM STT models that implement translation.
 
 ### Anthropic Messages API
 

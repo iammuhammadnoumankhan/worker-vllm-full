@@ -1,9 +1,12 @@
 import asyncio
+import base64
+import binascii
+import io
 import json
 import logging
 import os
 import time
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from dotenv import load_dotenv
 from vllm import AsyncLLMEngine
@@ -19,6 +22,16 @@ from vllm.entrypoints.openai.models.protocol import BaseModelPath, LoRAModulePat
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest, ResponsesResponse
 from vllm.entrypoints.openai.responses.serving import OpenAIServingResponses
+from vllm.entrypoints.openai.speech_to_text.protocol import (
+    TranscriptionRequest,
+    TranscriptionResponse,
+    TranscriptionResponseVerbose,
+    TranslationRequest,
+    TranslationResponse,
+    TranslationResponseVerbose,
+)
+from vllm.entrypoints.openai.speech_to_text.serving import OpenAIServingTranscription, OpenAIServingTranslation
+from starlette.datastructures import UploadFile
 
 from constants import DEFAULT_BATCH_SIZE, DEFAULT_BATCH_SIZE_GROWTH_FACTOR, DEFAULT_MAX_CONCURRENCY, DEFAULT_MIN_BATCH_SIZE
 from engine_args import get_engine_args
@@ -309,6 +322,20 @@ class OpenAIvLLMEngine(vLLMEngine):
             enable_prompt_tokens_details=os.getenv('ENABLE_PROMPT_TOKENS_DETAILS', 'false').lower() == 'true',
             enable_force_include_usage=os.getenv('ENABLE_FORCE_INCLUDE_USAGE', 'false').lower() == 'true',
         )
+        self.transcription_engine = OpenAIServingTranscription(
+            engine_client=self.llm,
+            models=self.serving_models,
+            request_logger=None,
+            return_tokens_as_token_ids=os.getenv('RETURN_TOKENS_AS_TOKEN_IDS', 'false').lower() == 'true',
+            enable_force_include_usage=os.getenv('ENABLE_FORCE_INCLUDE_USAGE', 'false').lower() == 'true',
+        )
+        self.translation_engine = OpenAIServingTranslation(
+            engine_client=self.llm,
+            models=self.serving_models,
+            request_logger=None,
+            return_tokens_as_token_ids=os.getenv('RETURN_TOKENS_AS_TOKEN_IDS', 'false').lower() == 'true',
+            enable_force_include_usage=os.getenv('ENABLE_FORCE_INCLUDE_USAGE', 'false').lower() == 'true',
+        )
 
         if hasattr(self.chat_engine, 'warmup'):
             await self.chat_engine.warmup()
@@ -327,6 +354,9 @@ class OpenAIvLLMEngine(vLLMEngine):
                 yield response
         elif openai_request.openai_route == "/v1/messages":
             async for response in self._handle_messages_request(openai_request):
+                yield response
+        elif openai_request.openai_route in ["/v1/audio/transcriptions", "/v1/audio/translations"]:
+            async for response in self._handle_speech_to_text_request(openai_request):
                 yield response
         else:
             yield create_error_response("Invalid route").model_dump()
@@ -506,3 +536,130 @@ class OpenAIvLLMEngine(vLLMEngine):
                 )
             ).model_dump_json()
             yield f"event: error\ndata: {error_payload}\n\n"
+
+    def _decode_file_bytes(self, payload: Any) -> bytes:
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, str):
+            if payload.startswith("data:") and "," in payload:
+                payload = payload.split(",", 1)[1]
+            try:
+                return base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError):
+                return payload.encode("utf-8")
+        raise ValueError("Unsupported file payload type")
+
+    def _build_upload_file_and_audio(self, file_payload: Any) -> tuple[UploadFile, bytes]:
+        filename = "audio"
+        payload = file_payload
+
+        if isinstance(file_payload, dict):
+            filename = str(file_payload.get("filename") or file_payload.get("name") or filename)
+            payload = (
+                file_payload.get("data")
+                or file_payload.get("content")
+                or file_payload.get("bytes")
+                or file_payload.get("file")
+            )
+
+        if payload is None:
+            raise ValueError("Missing file payload")
+
+        audio_data = self._decode_file_bytes(payload)
+        upload_file = UploadFile(
+            file=io.BytesIO(audio_data),
+            filename=filename,
+        )
+        return upload_file, audio_data
+
+    async def _handle_speech_to_text_request(self, openai_request: JobInput):
+        request_id = getattr(openai_request, "request_id", "unknown")
+        route = openai_request.openai_route
+        openai_input = openai_request.openai_input or {}
+
+        if not isinstance(openai_input, dict):
+            yield create_error_response(
+                "Invalid request format for audio endpoint",
+                err_type="BadRequestError",
+            ).model_dump()
+            return
+
+        file_payload = openai_input.get("file")
+        if file_payload is None:
+            yield create_error_response(
+                "Missing required field: file",
+                err_type="BadRequestError",
+            ).model_dump()
+            return
+
+        try:
+            upload_file, audio_data = self._build_upload_file_and_audio(file_payload)
+            request_payload = dict(openai_input)
+            request_payload["file"] = upload_file
+
+            if route == "/v1/audio/transcriptions":
+                request = TranscriptionRequest(**request_payload)
+                generator = await self.transcription_engine.create_transcription(
+                    audio_data=audio_data,
+                    request=request,
+                    raw_request=DummyRequest(),
+                )
+            else:
+                request = TranslationRequest(**request_payload)
+                generator = await self.translation_engine.create_translation(
+                    audio_data=audio_data,
+                    request=request,
+                    raw_request=DummyRequest(),
+                )
+        except Exception as e:
+            logging.error(
+                "Invalid speech-to-text request: %s",
+                e,
+                extra={"request_id": request_id},
+                exc_info=True,
+            )
+            yield create_error_response(
+                str(e),
+                err_type="BadRequestError",
+            ).model_dump()
+            return
+
+        if isinstance(generator, ErrorResponse):
+            yield generator.model_dump()
+            return
+
+        if isinstance(
+            generator,
+            (
+                TranscriptionResponse,
+                TranscriptionResponseVerbose,
+                TranslationResponse,
+                TranslationResponseVerbose,
+            ),
+        ):
+            yield generator.model_dump()
+            return
+
+        try:
+            async for chunk in generator:
+                if not self.raw_openai_output and isinstance(chunk, str) and chunk.startswith("data: "):
+                    data = chunk.removeprefix("data: ").strip()
+                    if data == "[DONE]":
+                        continue
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        yield chunk
+                    continue
+                yield chunk
+        except Exception as e:
+            logging.error(
+                "Error streaming speech-to-text response: %s",
+                e,
+                extra={"request_id": request_id},
+                exc_info=True,
+            )
+            yield create_error_response(
+                "Streaming response failed",
+                err_type="InternalServerError",
+            ).model_dump()
